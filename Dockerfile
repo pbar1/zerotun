@@ -13,6 +13,7 @@ RUN cargo build --release --locked --bin zerotun
 
 FROM gcr.io/distroless/cc-debian13:nonroot
 LABEL org.opencontainers.image.source="https://github.com/pbar1/zerotun"
+LABEL org.opencontainers.image.description="TCP and UDP reverse tunnel over QUIC."
 COPY --from=build /build/target/release/zerotun /zerotun
 USER 65532:65532
 ENTRYPOINT ["/zerotun"]
