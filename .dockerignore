@@ -1,0 +1,11 @@
+*
+!Cargo.toml
+!Cargo.lock
+!xtask/
+!xtask/**
+!src/
+!src/**
+!benches/
+!benches/**
+!tests/
+!tests/**

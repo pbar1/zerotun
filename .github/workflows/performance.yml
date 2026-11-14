@@ -1,0 +1,58 @@
+name: Performance
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['src/**', 'xtask/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'benches/**', 'tests/benchmark_gate.rs', '.github/workflows/performance.yml']
+  push:
+    branches: [main]
+    paths: ['src/**', 'xtask/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'benches/**', 'tests/benchmark_gate.rs', '.github/workflows/performance.yml']
+  workflow_dispatch:
+    inputs:
+      reference:
+        description: Git ref to compare with (same runner, current benchmark harness)
+        default: HEAD^
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        id: rust
+        with:
+          components: clippy
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: performance
+      - name: Compare reference and candidate
+        env:
+          REFERENCE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.reference }}
+          RUSTUP_TOOLCHAIN: ${{ steps.rust.outputs.name }}
+          ZEROTUN_BENCH_OUTPUT: ${{ runner.temp }}/criterion
+        run: cargo xtask bench-compare "$REFERENCE"
+      - name: Save Criterion estimates and provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: criterion-${{ github.sha }}
+          path: ${{ runner.temp }}/criterion/
+          retention-days: 7

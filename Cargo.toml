@@ -1,0 +1,79 @@
+[package]
+name = "zerotun"
+version = "0.1.0"
+edition = "2024"
+
+description = "A fixed-target TCP and UDP tunnel over mutually authenticated QUIC"
+repository = "https://github.com/pbar1/zerotun"
+
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+missing_docs = "deny"
+nonstandard_style = { level = "deny", priority = -1 }
+unfulfilled_lint_expectations = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unstable_features = "forbid"
+unused_must_use = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+# Keep cohesive handlers and test scenarios together.
+too_many_lines = "allow"
+absolute_paths = "deny"
+allow_attributes_without_reason = "deny"
+as_underscore = "deny"
+doc_paragraphs_missing_punctuation = "deny"
+exhaustive_enums = "deny"
+exhaustive_structs = "deny"
+missing_assert_message = "deny"
+single_char_lifetime_names = "deny"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[workspace.lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_html_tags = "deny"
+invalid_rust_codeblocks = "deny"
+missing_crate_level_docs = "deny"
+private_intra_doc_links = "deny"
+redundant_explicit_links = "deny"
+unescaped_backticks = "deny"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+mimalloc = { version = "0.1.52", default-features = false }
+nix = { version = "0.31", default-features = false, features = ["net", "uio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+bytes = "1"
+socket2 = "0.6"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+serde_json = "1"
+tempfile = "3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+[[bench]]
+name = "relay"
+harness = false
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          outputs: |
+            type=local,dest=target/image
+            type=oci,dest=${{ runner.temp }}/image,tar=false
+          cache-from: type=gha,scope=image-${{ runner.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ runner.arch }}
+      - name: Check
+        run: cargo xtask check
+      - name: Test shipped binary
+        env:
+          ZEROTUN_BENCH_BIN: ${{ github.workspace }}/target/image/zerotun
+        run: cargo xtask bench -- --test

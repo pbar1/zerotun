@@ -1,0 +1,29 @@
+avoid-breaking-exported-api = false
+warn-on-all-wildcard-imports = true
+allow-unwrap-in-tests = false
+allow-unwrap-in-consts = false
+max-fn-params-bools = 1
+absolute-paths-max-segments = 2
+
+disallowed-methods = [
+    { path = "std::iter::Iterator::for_each", reason = "Prefer a for loop; justify the guide's readability exception locally." },
+    { path = "std::panic::catch_unwind", reason = "Propagate errors; panic recovery needs an explicit, reviewed exception." },
+    { path = "std::sync::PoisonError::into_inner", reason = "Do not recover data from a poisoned lock." },
+    { path = "std::sync::PoisonError::get_ref", reason = "Do not access data behind a poisoned lock." },
+    { path = "std::sync::PoisonError::get_mut", reason = "Do not access data behind a poisoned lock." },
+    { path = "std::sync::Mutex::clear_poison", reason = "Do not bypass lock poisoning." },
+    { path = "std::sync::RwLock::clear_poison", reason = "Do not bypass lock poisoning." },
+]
+
+# Arc is required by Quinn/Rustls and shared Tokio tasks. Rc has no current use;
+# introducing it requires a local exception explaining why borrowing is impractical.
+disallowed-types = [
+    { path = "std::rc::Rc", reason = "Prefer unique ownership and borrowing; justify necessary shared ownership locally." },
+]
+
+# Known constructor macros; unsafe_code also catches handwritten initializers.
+# Other macros or dependencies can still introduce startup code and need review.
+disallowed-macros = [
+    { path = "ctor::ctor", reason = "Initialization must run after main starts." },
+    { path = "ctor_lite::ctor", reason = "Initialization must run after main starts." },
+]

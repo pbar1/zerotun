@@ -1,0 +1,18 @@
+# https://google.github.io/styleguide/rustguide.html#code-formatting-and-aesthetics
+edition = "2024"
+style_edition = "2024"
+max_width = 100
+unstable_features = true
+imports_granularity = "Item"
+group_imports = "StdExternalCrate"
+normalize_comments = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+hex_literal_case = "Lower"
+format_macro_matchers = true
+format_code_in_doc_comments = true
+normalize_doc_attributes = true
+wrap_comments = true
+comment_width = 100
+error_on_line_overflow = true
+error_on_unformatted = true
