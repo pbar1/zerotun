@@ -1,9 +1,10 @@
 # zerotun
 
-Publish services without exposing your server's IP.
+Minimal reverse tunnel over QUIC.
 
-Forward TCP and UDP through a public edge, with no port forwarding required
-on your network.
+Relays TCP and UDP traffic over a QUIC backhaul connection initiated by the
+origin, preserving the privacy of the origin IP and avoiding inbound firewall
+rules or port forwarding.
 
 ```text
 ╭────────────────╮   ╭────────────────╮
