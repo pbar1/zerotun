@@ -14,7 +14,20 @@ use rcgen::ExtendedKeyUsagePurpose;
 use rcgen::IsCa;
 use rcgen::KeyPair;
 use rcgen::KeyUsagePurpose;
-use rustls::crypto::ring;
+use rcgen::PKCS_ECDSA_P256_SHA256;
+use rcgen::PKCS_ED25519;
+use rcgen::PKCS_ML_DSA_44;
+use rcgen::PKCS_ML_DSA_65;
+use rcgen::PKCS_ML_DSA_87;
+use rcgen::PKCS_RSA_SHA256;
+use rcgen::SignatureAlgorithm;
+use rustls::CipherSuite;
+use rustls::NamedGroup;
+use rustls::crypto::CryptoProvider;
+use rustls::crypto::aws_lc_rs;
+use rustls::crypto::aws_lc_rs::cipher_suite;
+use rustls::crypto::aws_lc_rs::kx_group;
+use rustls::pki_types::ServerName;
 use rustls::server::WebPkiClientVerifier;
 use rustls::version;
 use tempfile::TempDir;
@@ -30,11 +43,21 @@ use crate::config::Transport;
 struct Credentials(TempDir);
 impl Credentials {
     fn new() -> Result<Self> {
+        Self::with_algorithm(&PKCS_ML_DSA_65)
+    }
+    fn with_algorithm(algorithm: &'static SignatureAlgorithm) -> Result<Self> {
+        Self::with_algorithms(algorithm, algorithm, algorithm)
+    }
+    fn with_algorithms(
+        ca_algorithm: &'static SignatureAlgorithm,
+        edge_algorithm: &'static SignatureAlgorithm,
+        origin_algorithm: &'static SignatureAlgorithm,
+    ) -> Result<Self> {
         let directory = Self(tempfile::tempdir()?);
         let mut params = CertificateParams::default();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        let ca = CertifiedIssuer::self_signed(params, KeyPair::generate()?)?;
+        let ca = CertifiedIssuer::self_signed(params, KeyPair::generate_for(ca_algorithm)?)?;
         fs::write(directory.path("ca.pem"), ca.pem())?;
         for (name, purpose) in [
             ("edge", ExtendedKeyUsagePurpose::ServerAuth),
@@ -45,7 +68,12 @@ impl Credentials {
         ] {
             let mut params = CertificateParams::new(vec![format!("{name}.test")])?;
             params.extended_key_usages = vec![purpose];
-            let key = KeyPair::generate()?;
+            let algorithm = if name == "edge" {
+                edge_algorithm
+            } else {
+                origin_algorithm
+            };
+            let key = KeyPair::generate_for(algorithm)?;
             let certificate = params.signed_by(&key, &ca)?;
             fs::write(directory.path(&format!("{name}.pem")), certificate.pem())?;
             fs::write(directory.path(&format!("{name}.key")), key.serialize_pem())?;
@@ -67,6 +95,268 @@ impl Credentials {
             connect_timeout: Duration::from_secs(1),
         }
     }
+}
+
+fn tls_configs(
+    directory: &Credentials,
+    server_provider: CryptoProvider,
+    client_provider: CryptoProvider,
+) -> Result<(rustls::ServerConfig, rustls::ClientConfig)> {
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in quic::certs(&directory.path("ca.pem"))? {
+        roots.add(cert)?;
+    }
+    let server_provider = Arc::new(server_provider);
+    let verifier = WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots.clone()),
+        server_provider.clone(),
+    )
+    .build()?;
+    let server = rustls::ServerConfig::builder_with_provider(server_provider)
+        .with_protocol_versions(&[&version::TLS13])?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            quic::certs(&directory.path("edge.pem"))?,
+            quic::key(&directory.path("edge.key"))?,
+        )?;
+    let client = rustls::ClientConfig::builder_with_provider(Arc::new(client_provider))
+        .with_protocol_versions(&[&version::TLS13])?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(
+            quic::certs(&directory.path("origin.pem"))?,
+            quic::key(&directory.path("origin.key"))?,
+        )?;
+    Ok((server, client))
+}
+
+fn unrestricted_auth_provider() -> CryptoProvider {
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = vec![kx_group::MLKEM768];
+    provider
+}
+
+fn tls_handshake(
+    directory: &Credentials,
+    server_provider: CryptoProvider,
+    client_provider: CryptoProvider,
+) -> Result<(rustls::ClientConnection, rustls::ServerConnection)> {
+    let (server, client) = tls_configs(directory, server_provider, client_provider)?;
+    let mut server = rustls::ServerConnection::new(Arc::new(server))?;
+    let mut client =
+        rustls::ClientConnection::new(Arc::new(client), ServerName::try_from("edge.test")?)?;
+    for _ in 0..16 {
+        let mut flight = Vec::new();
+        client.write_tls(&mut flight)?;
+        let mut input = flight.as_slice();
+        while !input.is_empty() {
+            let read = server.read_tls(&mut input)?;
+            assert!(read > 0, "server consumes each TLS flight");
+            server.process_new_packets()?;
+        }
+        flight.clear();
+        server.write_tls(&mut flight)?;
+        let mut input = flight.as_slice();
+        while !input.is_empty() {
+            let read = client.read_tls(&mut input)?;
+            assert!(read > 0, "client consumes each TLS flight");
+            client.process_new_packets()?;
+        }
+        if !server.is_handshaking() && !client.is_handshaking() {
+            return Ok((client, server));
+        }
+    }
+    panic!("in-memory TLS handshake stalled");
+}
+
+#[test]
+fn negotiates_only_post_quantum_backhaul_algorithms() -> Result<()> {
+    let directory = Credentials::new()?;
+    let (client, server) = tls_handshake(&directory, crypto::provider(), crypto::provider())?;
+    for connection in [&**client, &**server] {
+        assert_eq!(
+            connection.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3),
+            "backhaul requires TLS 1.3"
+        );
+        assert_eq!(
+            connection
+                .negotiated_key_exchange_group()
+                .expect("handshake negotiated a key exchange")
+                .name(),
+            NamedGroup::MLKEM768,
+            "backhaul requires pure ML-KEM-768"
+        );
+        assert_eq!(
+            connection
+                .negotiated_cipher_suite()
+                .expect("handshake negotiated a cipher")
+                .suite(),
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
+            "backhaul application encryption requires AES-256"
+        );
+        assert!(
+            connection.peer_certificates().is_some(),
+            "both relays authenticate their peer"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_other_key_exchanges_and_application_ciphers() -> Result<()> {
+    let directory = Credentials::new()?;
+    let mut peers = Vec::new();
+    for group in [
+        kx_group::X25519,
+        kx_group::SECP256R1,
+        kx_group::SECP384R1,
+        kx_group::X25519MLKEM768,
+        kx_group::SECP256R1MLKEM768,
+        kx_group::MLKEM1024,
+    ] {
+        let mut peer = aws_lc_rs::default_provider();
+        peer.kx_groups = vec![group];
+        peers.push(peer);
+    }
+    for suite in [
+        cipher_suite::TLS13_AES_128_GCM_SHA256,
+        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+    ] {
+        let mut peer = crypto::provider();
+        peer.cipher_suites = vec![suite];
+        peers.push(peer);
+    }
+    for peer in peers {
+        for server in [false, true] {
+            let (edge, origin) = if server {
+                (crypto::provider(), peer.clone())
+            } else {
+                (peer.clone(), crypto::provider())
+            };
+            assert!(
+                tls_handshake(&directory, edge, origin).is_err(),
+                "neither relay may negotiate an alternative algorithm"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_rejects_classical_only_key_exchange_in_both_directions() -> Result<()> {
+    use quinn::crypto::rustls::QuicClientConfig;
+    use quinn::crypto::rustls::QuicServerConfig;
+
+    let directory = Credentials::new()?;
+    for strict_server in [false, true] {
+        let mut classical = aws_lc_rs::default_provider();
+        classical.kx_groups = vec![kx_group::X25519];
+        let (server_tls, client_tls) = tls_configs(&directory, classical.clone(), classical)?;
+        let mut client;
+        let server;
+        if strict_server {
+            server = quic::endpoint(
+                &directory.transport("edge", "origin"),
+                "127.0.0.1:0".parse()?,
+                Role::Edge,
+                false,
+            )?;
+            client = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
+            client.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+                QuicClientConfig::try_from(client_tls)?,
+            )));
+        } else {
+            server = quinn::Endpoint::server(
+                quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_tls)?)),
+                "127.0.0.1:0".parse()?,
+            )?;
+            client = quic::endpoint(
+                &directory.transport("origin", "edge"),
+                "127.0.0.1:0".parse()?,
+                Role::Origin,
+                false,
+            )?;
+        }
+        let outgoing = client.connect(server.local_addr()?, "edge.test")?;
+        let (accepted, connected) = time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                async { server.accept().await.expect("test peer connects").await },
+                outgoing,
+            )
+        })
+        .await?;
+        assert!(accepted.is_err(), "edge must reject the handshake");
+        assert!(connected.is_err(), "origin must reject the handshake");
+        server.close(0u32.into(), b"done");
+        client.close(0u32.into(), b"done");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejects_other_identity_keys_and_certificate_signatures() -> Result<()> {
+    for algorithm in [
+        &PKCS_ECDSA_P256_SHA256,
+        &PKCS_ED25519,
+        &PKCS_RSA_SHA256,
+        &PKCS_ML_DSA_44,
+        &PKCS_ML_DSA_87,
+    ] {
+        let directory = Credentials::with_algorithm(algorithm)?;
+        for (role, name, peer) in [
+            (Role::Edge, "edge", "origin"),
+            (Role::Origin, "origin", "edge"),
+        ] {
+            let error = quic::endpoint(
+                &directory.transport(name, peer),
+                "127.0.0.1:0".parse()?,
+                role,
+                false,
+            )
+            .expect_err("unsupported local identity must fail at startup");
+            assert!(
+                error.to_string().contains("ML-DSA-65"),
+                "startup identifies the required identity algorithm: {error}"
+            );
+        }
+        // Valid ML-DSA-65 identities do not make a classical or other CA acceptable.
+        let directory = Credentials::with_algorithms(algorithm, &PKCS_ML_DSA_65, &PKCS_ML_DSA_65)?;
+        tls_handshake(
+            &directory,
+            unrestricted_auth_provider(),
+            unrestricted_auth_provider(),
+        )?;
+        assert!(
+            tls_handshake(&directory, crypto::provider(), unrestricted_auth_provider()).is_err(),
+            "edge rejects unsupported certificate-chain signatures"
+        );
+        assert!(
+            tls_handshake(&directory, unrestricted_auth_provider(), crypto::provider()).is_err(),
+            "origin rejects unsupported certificate-chain signatures"
+        );
+        // A valid ML-DSA-65 CA cannot authorize a peer using a different identity algorithm.
+        let directory = Credentials::with_algorithms(&PKCS_ML_DSA_65, &PKCS_ML_DSA_65, algorithm)?;
+        tls_handshake(
+            &directory,
+            unrestricted_auth_provider(),
+            unrestricted_auth_provider(),
+        )?;
+        assert!(
+            tls_handshake(&directory, crypto::provider(), unrestricted_auth_provider()).is_err(),
+            "edge rejects unsupported origin authentication"
+        );
+        let directory = Credentials::with_algorithms(&PKCS_ML_DSA_65, algorithm, &PKCS_ML_DSA_65)?;
+        tls_handshake(
+            &directory,
+            unrestricted_auth_provider(),
+            unrestricted_auth_provider(),
+        )?;
+        assert!(
+            tls_handshake(&directory, unrestricted_auth_provider(), crypto::provider()).is_err(),
+            "origin rejects unsupported edge authentication"
+        );
+    }
+    Ok(())
 }
 
 async fn connected(state: &mut watch::Receiver<Option<Connection>>) -> Result<Connection> {
@@ -241,13 +531,13 @@ async fn transparent_udp_quic(
     let _ = actor.await;
 
     // Inner QUIC endpoints own application TLS keys; the relay sees opaque UDP.
-    let application = Credentials::new()?;
+    let application = Credentials::with_algorithm(&PKCS_ECDSA_P256_SHA256)?;
     let d = application.0.path();
     let mut roots = rustls::RootCertStore::empty();
     for ca in cert(&d.join("ca.pem"))? {
         roots.add(ca)?;
     }
-    let provider = Arc::new(ring::default_provider());
+    let provider = Arc::new(aws_lc_rs::default_provider());
     let verifier =
         WebPkiClientVerifier::builder_with_provider(Arc::new(roots.clone()), provider.clone())
             .build()?;
@@ -421,12 +711,12 @@ async fn tcp_without_proxy_preserves_mtls() -> Result<()> {
     use tokio_rustls::TlsConnector;
 
     let relay = Credentials::new()?;
-    let application = Credentials::new()?;
+    let application = Credentials::with_algorithm(&PKCS_ECDSA_P256_SHA256)?;
     let mut roots = rustls::RootCertStore::empty();
     for ca in quic::certs(&application.path("ca.pem"))? {
         roots.add(ca)?;
     }
-    let provider = Arc::new(ring::default_provider());
+    let provider = Arc::new(aws_lc_rs::default_provider());
     let verifier =
         WebPkiClientVerifier::builder_with_provider(Arc::new(roots.clone()), provider.clone())
             .build()?;

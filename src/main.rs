@@ -1,6 +1,7 @@
 //! Fixed-target TCP/UDP forwarding over a mutually authenticated QUIC backhaul.
 
 mod config;
+mod crypto;
 mod forward;
 mod metadata;
 mod quic;

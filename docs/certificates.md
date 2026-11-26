@@ -1,13 +1,15 @@
 # Relay certificates
 
 Both relays require a trusted CA and the exact certificate of their peer.
+The CA and relay identities must use ML-DSA-65 keys and signatures. RSA, ECDSA,
+Ed25519 and other signature algorithms are not supported for the backhaul.
 The edge certificate needs `serverAuth` and a DNS SAN matching `--server-name`.
 The origin certificate needs `clientAuth`. PEM certificate chains must be leaf
 first. Application TLS, if used, has its own certificates; relays do not need them.
 
 ## Create a private CA and relay identities
 
-These commands require OpenSSL 3. Replace `edge.example.com` with the name you
+These commands require OpenSSL 3.5 or newer. Replace `edge.example.com` with the name you
 will pass to `--server-name`; it need not resolve in DNS because `--edge` takes
 a numeric IP address.
 
@@ -16,12 +18,12 @@ umask 077
 mkdir -p credentials
 cd credentials
 
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
+openssl req -x509 -newkey ML-DSA-65 -noenc \
   -keyout ca.key -out ca.pem -days 365 -subj '/CN=zerotun CA' \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign'
 
-openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
+openssl req -new -newkey ML-DSA-65 -noenc \
   -keyout edge.key -out edge.csr -subj '/CN=edge.example.com' \
   -addext 'subjectAltName=DNS:edge.example.com' \
   -addext 'keyUsage=critical,digitalSignature' \
@@ -29,7 +31,7 @@ openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
 openssl x509 -req -in edge.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out edge.pem -days 90 -copy_extensions copy
 
-openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
+openssl req -new -newkey ML-DSA-65 -noenc \
   -keyout origin.key -out origin.csr -subj '/CN=zerotun origin' \
   -addext 'keyUsage=critical,digitalSignature' \
   -addext 'extendedKeyUsage=clientAuth'

@@ -17,11 +17,12 @@ use quinn::TransportConfig;
 use quinn::congestion::BbrConfig;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::crypto::rustls::QuicServerConfig;
-use rustls::crypto::ring;
+use rustls::client::Resumption;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::pki_types::ServerName;
 use rustls::pki_types::pem::PemObject;
+use rustls::server::NoServerSessionStorage;
 use rustls::server::WebPkiClientVerifier;
 use rustls::version;
 use tokio::io::AsyncRead;
@@ -35,6 +36,7 @@ use tokio::time;
 use crate::config::Congestion;
 use crate::config::Origin;
 use crate::config::Transport;
+use crate::crypto;
 use crate::sockets;
 use crate::udp;
 
@@ -99,7 +101,7 @@ pub fn endpoint(c: &Transport, bind: SocketAddr, role: Role, udp: bool) -> Resul
     for ca in certs(&c.ca)? {
         roots.add(ca)?;
     }
-    let provider = Arc::new(ring::default_provider());
+    let provider = Arc::new(crypto::provider());
     let mut transport = TransportConfig::default();
     // Only the edge opens streams. No peer may open unidirectional streams.
     transport.max_concurrent_bidi_streams(if server { 0u32 } else { c.max_connections }.into());
@@ -125,8 +127,11 @@ pub fn endpoint(c: &Transport, bind: SocketAddr, role: Role, udp: bool) -> Resul
             .with_single_cert(certs(&c.cert)?, key(&c.key)?)?;
         tls.alpn_protocols = vec![b"zerotun/1".to_vec()];
         tls.max_early_data_size = 0;
-        let mut config =
-            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
+        tls.send_tls13_tickets = 0;
+        tls.session_storage = Arc::new(NoServerSessionStorage {});
+        let mut config = quinn::ServerConfig::with_crypto(Arc::new(
+            QuicServerConfig::with_initial(Arc::new(tls), crypto::initial_suite())?,
+        ));
         config.transport_config(transport);
         config.max_incoming(8);
         (Some(config), None)
@@ -137,7 +142,12 @@ pub fn endpoint(c: &Transport, bind: SocketAddr, role: Role, udp: bool) -> Resul
             .with_client_auth_cert(certs(&c.cert)?, key(&c.key)?)?;
         tls.alpn_protocols = vec![b"zerotun/1".to_vec()];
         tls.enable_early_data = false;
-        let mut config = quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls)?));
+        // Every reconnect performs a fresh post-quantum exchange and mutual authentication.
+        tls.resumption = Resumption::disabled();
+        let mut config = quinn::ClientConfig::new(Arc::new(QuicClientConfig::with_initial(
+            Arc::new(tls),
+            crypto::initial_suite(),
+        )?));
         config.transport_config(transport);
         (None, Some(config))
     };

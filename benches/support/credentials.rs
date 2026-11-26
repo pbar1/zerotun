@@ -10,8 +10,11 @@ use rcgen::ExtendedKeyUsagePurpose;
 use rcgen::IsCa;
 use rcgen::KeyPair;
 use rcgen::KeyUsagePurpose;
+use rcgen::PKCS_ECDSA_P256_SHA256;
+use rcgen::PKCS_ML_DSA_65;
+use rcgen::SignatureAlgorithm;
 use rustls::client::Resumption;
-use rustls::crypto::ring;
+use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::pki_types::PrivatePkcs8KeyDer;
@@ -25,21 +28,25 @@ pub struct Credentials {
     pub server: Arc<rustls::ServerConfig>,
 }
 
-fn ca() -> Result<CertifiedIssuer<'static, KeyPair>> {
+fn ca(algorithm: &'static SignatureAlgorithm) -> Result<CertifiedIssuer<'static, KeyPair>> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    Ok(CertifiedIssuer::self_signed(params, KeyPair::generate()?)?)
+    Ok(CertifiedIssuer::self_signed(
+        params,
+        KeyPair::generate_for(algorithm)?,
+    )?)
 }
 
 fn identity(
     ca: &CertifiedIssuer<'_, KeyPair>,
     name: &str,
     purpose: ExtendedKeyUsagePurpose,
+    algorithm: &'static SignatureAlgorithm,
 ) -> Result<(rcgen::Certificate, KeyPair)> {
     let mut params = CertificateParams::new(vec![format!("{name}.test")])?;
     params.extended_key_usages = vec![purpose];
-    let key = KeyPair::generate()?;
+    let key = KeyPair::generate_for(algorithm)?;
     Ok((params.signed_by(&key, ca)?, key))
 }
 
@@ -60,13 +67,13 @@ fn write(path: &Path, contents: &str) -> Result<()> {
 impl Credentials {
     pub fn new() -> Result<Self> {
         let directory = tempfile::tempdir()?;
-        let backhaul = ca()?;
+        let backhaul = ca(&PKCS_ML_DSA_65)?;
         write(&directory.path().join("ca.pem"), &backhaul.pem())?;
         for (name, purpose) in [
             ("edge", ExtendedKeyUsagePurpose::ServerAuth),
             ("origin", ExtendedKeyUsagePurpose::ClientAuth),
         ] {
-            let (cert, key) = identity(&backhaul, name, purpose)?;
+            let (cert, key) = identity(&backhaul, name, purpose, &PKCS_ML_DSA_65)?;
             write(&directory.path().join(format!("{name}.pem")), &cert.pem())?;
             write(
                 &directory.path().join(format!("{name}.key")),
@@ -74,14 +81,22 @@ impl Credentials {
             )?;
         }
         // Relays receive no application identity or application CA configuration.
-        let application = ca()?;
-        let (backend, backend_key) =
-            identity(&application, "backend", ExtendedKeyUsagePurpose::ServerAuth)?;
-        let (client, client_key) =
-            identity(&application, "client", ExtendedKeyUsagePurpose::ClientAuth)?;
+        let application = ca(&PKCS_ECDSA_P256_SHA256)?;
+        let (backend, backend_key) = identity(
+            &application,
+            "backend",
+            ExtendedKeyUsagePurpose::ServerAuth,
+            &PKCS_ECDSA_P256_SHA256,
+        )?;
+        let (client, client_key) = identity(
+            &application,
+            "client",
+            ExtendedKeyUsagePurpose::ClientAuth,
+            &PKCS_ECDSA_P256_SHA256,
+        )?;
         let mut roots = rustls::RootCertStore::empty();
         roots.add(CertificateDer::from(application.der().to_vec()))?;
-        let provider = Arc::new(ring::default_provider());
+        let provider = Arc::new(aws_lc_rs::default_provider());
         let verifier =
             WebPkiClientVerifier::builder_with_provider(Arc::new(roots.clone()), provider.clone())
                 .build()?;

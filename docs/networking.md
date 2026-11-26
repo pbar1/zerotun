@@ -9,6 +9,22 @@ through unchanged unless PROXY protocol is enabled.
 Neither relay needs root, TUN devices, host routes or networking capabilities.
 Use high listener ports unless the host already permits unprivileged low ports.
 
+## Backhaul cryptography
+
+The backhaul requires TLS 1.3 with ML-KEM-768 key exchange, ML-DSA-65 mutual
+authentication and AES-256-GCM/SHA-384. Both certificate-chain and handshake
+signatures are restricted to ML-DSA-65. There is no classical or hybrid key
+exchange fallback, session resumption or 0-RTT. Each reconnect performs a fresh
+key exchange and authenticates both relays, including their exact certificate pins.
+
+QUIC Initial packets use the protocol's mandatory, publicly derivable
+AES-128-GCM/SHA-256 protection; this does not protect application data or establish
+peer identity. Negotiated handshake and application protection use AES-256-GCM.
+
+Cryptography is provided by rustls with AWS-LC. Existing RSA, ECDSA or Ed25519
+relay credentials must be replaced using the [certificate guide](certificates.md).
+Application TLS remains opaque to the relays and has its own algorithm policy.
+
 ## Addresses
 
 Edge's `--listen-tcp` accepts client TCP traffic; `--bind` listens for the QUIC

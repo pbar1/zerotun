@@ -33,6 +33,9 @@ fixture; relays receive only backhaul identities. Download timing counts verifie
 received bytes, not bytes merely queued for transmission. Warm bulk streams exclude handshakes;
 all relevant setup is included in the connection benchmark.
 
+Backhaul credentials use ML-DSA-65; application TLS uses separate ECDSA credentials
+to exercise transparent forwarding independently of the backhaul's cryptographic policy.
+
 The link fixture is a regression workload, not an Internet simulator or tc netem.
 It uses bounded queues and ordinary UDP sockets, with no artificial jitter or
 random loss. Queue overflow/send failure invalidates a run. Kernel socket limits,
@@ -59,6 +62,10 @@ current checkout. Both use `xtask build --release`; `xtask bench` runs the curre
 harness against each binary on the same host, with identical workloads and settings. The
 reference need not contain benchmark code. This avoids comparing changed
 fixtures or relying on committed hardware-specific scores.
+
+The reference must support the current backhaul credential policy. Pre-PQ
+binaries cannot load this harness's ML-DSA-65 identities; establish a new baseline
+at the first PQ-capable commit rather than comparing across that transition.
 
 The default gate fails when the candidate's **entire 99% confidence interval for
 mean operation time is more than 15% slower than the reference's entire interval**:
