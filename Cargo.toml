@@ -55,7 +55,7 @@ unescaped_backticks = "deny"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 mimalloc = { version = "0.1.52", default-features = false }
-nix = { version = "0.31", default-features = false, features = ["net", "uio"] }
+nix = { version = "0.32", default-features = false, features = ["net", "uio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs"] }
